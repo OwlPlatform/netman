@@ -1,4 +1,4 @@
- #!/usr/bin/python 
+#!/usr/bin/python 
 
 # this is a very simple connection manager.
 # It assumes there are 3 possible networks: (1) Ethernet, (2) WiFi and (3) 3G modem.
@@ -22,16 +22,17 @@ def hasUSBdevice(devName):
         Uses substring matching
     """ 
 
+    foundIt = False; 
     message = 'testing for USB device: ' ; 
     logger.debug([message, devName]);
  
     proc = subprocess.Popen(['/usr/bin/lsusb'],stdout=subprocess.PIPE)
     for line in proc.stdout:
-        
         if line.find(devName) >= 0:
-            return True;
+            foundIt = True;
 
-    return False;
+    proc.wait();
+    return foundIt;
 #----------------------------------------------
 #
 def hasModule(modName):
@@ -76,9 +77,19 @@ def connectEthernet():
     # we got here, try to re-start the networking.
     args = ['/etc/init.d/networking' , 'networking', 'restart'];
     proc = subprocess.Popen(args,stdout=subprocess.PIPE)
-    print "spawned init.d/networking " ;
-    
-    return True;
+    logger.debug('spawned /etc/init.d/networking');
+
+    wasOK = False; 
+
+    # look for the string 'OK' in the output.
+
+    for line in proc.stdout:
+        if line.find('ok') >= 0:
+            wasOK = True;
+
+    proc.wait();
+
+    return wasOK;
 
 #-----------------------------------------------
 # try to connect to the WiFi
@@ -121,14 +132,18 @@ def has3Gcard():
     hasDongle =  hasUSBdevice("Airprime");
     loadedModule = hasModule("usbserial");
 
-    return hasKey & loadedModule;
+    has3G = hasDongle & loadedModule; 
+
+    logger.debug([ "3G device: ", has3G ]);
+
+    return has3G;
 
 #-----------------------------------------------
 # try to connect to the 3G
 def connect3G(): 
 #wvdial <something>
 
-    return True;
+    return False;
 
 #-----------------------------------------------
 def testURL(): 
@@ -171,8 +186,11 @@ logger.addHandler(ch)
 # this is the list of devices to try, in which order 
 devTests = { 0 : etherPluggedIn , 1 : hasWiFi, 2 : has3Gcard }; 
 devConnects =  { 0: connectEthernet, 1: connectWiFi, 2: connect3G, };
+devNames = { 0 : 'Ethernet', 1 : 'WiFi', 2 : '3GModem' }; 
+
 maxDevices = len(devConnects);
-#where we are in the list
+
+#where we are in the list of devices 
 devIndex = 0; 
 
 # First, see if we are connected by downloading a URL 
@@ -196,15 +214,15 @@ while (keepGoing):
             # make a list of all available devices 
             availableDevs = []; 
 
-            for devIndex in range(0,maxDevices-1): 
+            for devIndex in range(0,maxDevices): 
                 availableDevs.append( devTests.get(devIndex)() ) ;
 
             # if the device is there, try to connect                 
-            for devIndex in range(0,maxDevices-1):                 
+            for devIndex in range(0,maxDevices):                 
 
                 if availableDevs[devIndex] == True:
-                    print "trying device ", devConnects.get(devIndex) ;
-                    devConnects.get(devIndex)();
+                    print "Trying device ", devNames.get(devIndex) ;
+                    success = devConnects.get(devIndex)();
                     time.sleep(5);
                     isConnected = testURL();
 
@@ -214,7 +232,6 @@ while (keepGoing):
     else: 
          logger.debug('got URL OK');
 
-    logger.debug('got URL OK2'); 
     time.sleep(10);
 
                     
