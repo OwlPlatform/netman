@@ -9,9 +9,13 @@
 # 
 # Author: Richard P. Martin
 # Date: April 2013 
+# (c) the MIT license 
+
+# iwlist parsing from Hugo Chargois - 17 jan. 2010 - v.0.1
+# https://bbs.archlinux.org/viewtopic.php?id=88967
 
 from urllib import urlopen   # for testing the URL
-import sys     # for logging 
+import sys     # for logging and iwlist parsing 
 import time    # needed to sleep
 import subprocess   # opening subprograms 
 import logging      # logging and debugging 
@@ -106,17 +110,16 @@ def hasWiFi():
 
 #-----------------------------------------------
 def connectWiFi(): 
-    """ Try to connect over the WiFi. uses a process list from the 
-        program wnd
+    """ Try to connect over the WiFi. 
     """ 
-   # get the list of access points and if they have a key 
-    args = ['/sbin/iwlist' , 'wlan0', 'scan'];
-    proc = subprocess.Popen(args,stdout=subprocess.PIPE)
-    for line in proc.stdout:
-        if line.find('Cell') >= 0:
-            return True;
+    ap_table = do_wifi_scan(); 
+
+    for line in ap_table:
+        print line
+
     return False;
 
+# from /usr/sbin/wpa_gui
 # iwlist wlan0 scan
 # iwconfig wlan0 essid <SOMETHING>
 #/sbin/ifplugd -i wlan0 -q -f -u0 -d10 -w -I
@@ -160,6 +163,131 @@ def testURL():
 
     return False;
 #    return isConnected;
+
+#----------------------------------------------------------
+#--- these are the functions to parse the iwlist output 
+#----------------------------------------------------------
+def get_name(cell):
+    return matching_line(cell,"ESSID:")[1:-1]
+
+def get_quality(cell):
+    quality = matching_line(cell,"Quality=").split()[0].split('/')
+    return str(int(round(float(quality[0]) / float(quality[1]) * 100))).rjust(3) + " %"
+
+def get_channel(cell):
+    return matching_line(cell,"Channel:")
+
+def get_encryption(cell):
+    enc=""
+    if matching_line(cell,"Encryption key:") == "off":
+        enc="Open"
+    else:
+        for line in cell:
+            matching = match(line,"IE:")
+            if matching!=None:
+                wpa=match(matching,"WPA Version ")
+                if wpa!=None:
+                    enc="WPA v."+wpa
+        if enc=="":
+            enc="WEP"
+    return enc
+
+def get_address(cell):
+    return matching_line(cell,"Address: ")
+
+# Here's a dictionary of rules that will be applied to the description of each
+# cell. The key will be the name of the column in the table. The value is a
+# function defined above.
+
+rules={"Name":get_name,
+       "Quality":get_quality,
+       "Channel":get_channel,
+       "Encryption":get_encryption,
+       "Address":get_address,
+       }
+
+# Here you can choose the way of sorting the table. sortby should be a key of
+# the dictionary rules.
+
+def sort_cells(cells):
+    sortby = "Quality"
+    reverse = True
+    cells.sort(None, lambda el:el[sortby], reverse)
+
+# You can choose which columns to display here, and most importantly in what order. Of
+# course, they must exist as keys in the dict rules.
+
+columns=["Name","Address","Quality","Channel","Encryption"]
+
+
+def matching_line(lines, keyword):
+    """Returns the first matching line in a list of lines. See match()"""
+    for line in lines:
+        matching=match(line,keyword)
+        if matching!=None:
+            return matching
+    return None
+
+def match(line,keyword):
+    """If the first part of line (modulo blanks) matches keyword,
+    returns the end of that line. Otherwise returns None"""
+    line=line.lstrip()
+    length=len(keyword)
+    if line[:length] == keyword:
+        return line[length:]
+    else:
+        return None
+
+def parse_cell(cell):
+    """Applies the rules to the bunch of text describing a cell and returns the
+    corresponding dictionary"""
+    parsed_cell={}
+    for key in rules:
+        rule=rules[key]
+        parsed_cell.update({key:rule(cell)})
+    return parsed_cell
+
+def print_table(table):
+    for line in table:
+        print line
+
+def print_cells(cells):
+    table=[columns]
+    for cell in cells:
+        cell_properties=[]
+        for column in columns:
+            cell_properties.append(cell[column])
+        table.append(cell_properties)
+
+    return table;
+
+def do_wifi_scan():
+    """ Do an iwlist scan and return the results in a simple table """
+    cells=[[]] ;
+    parsed_cells=[] ;
+
+   # get the list of access points and if they have a key 
+    args = ['/sbin/iwlist' , 'wlan0', 'scan'];
+    proc = subprocess.Popen(args,stdout=subprocess.PIPE);
+    
+    for line in proc.stdout:
+        cell_line = match(line,"Cell ");
+        if cell_line != None:
+            cells.append([]); 
+            line = cell_line[-27:]; 
+        cells[-1].append(line.rstrip()); 
+
+    proc.wait();
+    cells=cells[1:] ;
+
+    for cell in cells:
+        parsed_cells.append(parse_cell(cell));
+
+    sort_cells(parsed_cells) ;
+
+    table = print_cells(parsed_cells);
+    
+    return table;
 
 
 #------------------------------------------
