@@ -17,8 +17,8 @@
 from urllib import urlopen   # for testing the URL
 import sys     # for logging and iwlist parsing 
 import time    # needed to sleep
-import subprocess   # opening subprograms 
-import logging      # logging and debugging 
+import subprocess # opening subprograms 
+import logging    # logging and debugging 
 
 #-----------------------------------------------
 def hasUSBdevice(devName):
@@ -30,7 +30,7 @@ def hasUSBdevice(devName):
     message = 'testing for USB device: ' ; 
     logger.debug([message, devName]);
  
-    proc = subprocess.Popen(['/usr/bin/lsusb'],stdout=subprocess.PIPE)
+    proc = subprocess.Popen(['/usr/bin/lsusb'],stdout=subprocess.PIPE, stderr=subprocess.STDOUT);
     for line in proc.stdout:
         if line.find(devName) >= 0:
             foundIt = True;
@@ -79,8 +79,11 @@ def connectEthernet():
     """ 
     # the cable is plugged in
     # we got here, try to re-start the networking.
+
+    return False; 
+
     args = ['/etc/init.d/networking' , 'networking', 'restart'];
-    proc = subprocess.Popen(args,stdout=subprocess.PIPE)
+    proc = subprocess.Popen(args,stdout=subprocess.PIPE, stderr=subprocess.STDOUT);
     logger.debug('spawned /etc/init.d/networking');
 
     wasOK = False; 
@@ -112,22 +115,50 @@ def hasWiFi():
 def connectWiFi(): 
     """ Try to connect over the WiFi. 
     """ 
+    # this will force a raw scan using iwconfig 
     ap_table = do_wifi_scan(); 
 
-    for line in ap_table:
-        print line
+    #for line in ap_table:
+    #    print line
 
-    return False;
+    # bring the wlan0 interface down
+    args = ['/sbin/ifdown' , 'wlan0'];
+    proc = subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT);
+    for line in proc.stdout:
+        dhcp_line = match(line,"DHCP");
 
-# from /usr/sbin/wpa_gui
+    proc.wait();    
+
+
+    # bring the wlan0 interface up
+    args = ['/sbin/ifup' , 'wlan0'];
+    proc = subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT);
+    for line in proc.stdout:
+        dhcp_line = match(line,"DHCP");
+
+    proc.wait();    
+
+    # test to see if dhcp gave us an address 
+    got_address = False;
+    args = ['/sbin/ifconfig' , 'wlan0'];
+    proc = subprocess.Popen(args,stdout=subprocess.PIPE, stderr=subprocess.STDOUT);
+    for line in proc.stdout:
+        addr_line = match(line,"inet addr");
+        if addr_line!=None: 
+            got_address = True;
+
+    proc.wait();    
+
+    return got_address;
+
+# Other Wifi processes seen from running /usr/sbin/wpa_gui
 # iwlist wlan0 scan
 # iwconfig wlan0 essid <SOMETHING>
 #/sbin/ifplugd -i wlan0 -q -f -u0 -d10 -w -I
 #/wpa_supplicant -u -s -O /var/run/wpa_supplicant
 #/sbin/wpa_supplicant -s -B -P /var/run/wpa_supplicant.wlan0.pid -i wlan0 -W -D nl80211,wext -c /etc/wpa_supplicant/wpa_supplicant.conf
 #/wpa_cli -B -P /var/run/wpa_action.wlan0.pid -i wlan0 -p /var/run/wpa_supplicant -a /sbin/wpa_action
-
-    return 
+#dhclient -1 -v -pf /run/dhclient.wlan0.pid -lf /var/lib/dhcp/dhclient.wlan0.leases wlan0
 
 #-----------------------------------------------
 # check if we have a 3G card 
@@ -156,8 +187,10 @@ def testURL():
 
     isConnected = False; 
     try: 
-        doc = urlopen("http://www.google.com/").read()
+        fh = urlopen("http://www.google.com/");
+        doc = fh.read();
         isConnected = True;
+        fh.close();
     except IOError:
         isConnected = False;
 
@@ -268,7 +301,7 @@ def do_wifi_scan():
 
    # get the list of access points and if they have a key 
     args = ['/sbin/iwlist' , 'wlan0', 'scan'];
-    proc = subprocess.Popen(args,stdout=subprocess.PIPE);
+    proc = subprocess.Popen(args,stdout=subprocess.PIPE, stderr=subprocess.STDOUT);
     
     for line in proc.stdout:
         cell_line = match(line,"Cell ");
@@ -289,6 +322,23 @@ def do_wifi_scan():
     
     return table;
 
+def isProcessRunning(name): 
+    """ Return True or False is a process is running """
+
+    args = ['/bin/ps' , 'auxwwwww'];
+    proc = subprocess.Popen(args,stdout=subprocess.PIPE, stderr=subprocess.STDOUT);
+
+    wasOK = False; 
+
+    # look for the string 'OK' in the output.
+
+    for line in proc.stdout:
+        if line.find(name) >= 0:
+            wasOK = True;
+
+    proc.wait();    
+
+    return True;
 
 #------------------------------------------
 # this is the main program
@@ -330,13 +380,18 @@ devIndex = 0;
 # URL again. If that succeeds, the loop is done. If not, it moves 
 # on to the next device. 
 
+# not: if retries gets to high (10), reboot yourself 
+numFailures =0;
+maxFailures = 10;
+waitSeconds = 10; 
+
 while (keepGoing):
 
     if testURL() == False :
+        numFailures = numFailures + 1 ;
         print "getting the URL failed" ;
         devIndex = 0; 
         isConnected = False; 
-
 
         while isConnected == False : 
             # make a list of all available devices 
@@ -351,17 +406,21 @@ while (keepGoing):
                 if availableDevs[devIndex] == True:
                     print "Trying device ", devNames.get(devIndex) ;
                     success = devConnects.get(devIndex)();
-                    time.sleep(5);
+                    time.sleep(waitSeconds);
                     isConnected = testURL();
 
                 # is the above worked, then break search for devices 
                 if isConnected == True:
                     break;
     else: 
+         numFailures = 0;
          logger.debug('got URL OK');
 
-    time.sleep(10);
+    time.sleep(waitSeconds);
 
+    # if we fail too many times, reboot
+    if numFailures >= maxFailures:
+        args = ['/sbin/shutdown' , '-r', 'now'];
+        proc = subprocess.Popen(args,stdout=subprocess.PIPE, stderr=subprocess.STDOUT);
+        proc.wait();            
                     
-                    
-                
